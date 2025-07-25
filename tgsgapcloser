@@ -67,6 +67,12 @@ function print_help()
     echo "          --min_match <int>                min match length for filtering TGS reads ."
     echo "                                           300bp for ont by default."
     echo "                                           200bp for pb by default."
+    echo "          --rm                             Remove Intermediate PAF file."
+    echo "          --hard                           Hard filter paf."
+    echo "          --min_idy_hard   <float>         min idy for hard filtering TGS candidate reads ."
+    echo "          --min_align_hard   <float>       min align length for hard filtering TGS candidate reads ."
+    echo "          --max_hang_hard   <float>   max errorly unaligned length for hard filtering TGS candidate reads ."
+    echo "          --min_alignratio_hard   <float>  min alignment ratio against unaligned length for hard filtering TGS candidate reads ."
     echo "          --thread    <int>                threads uesd. 16 by default."
     echo "          --chunk     <int>                split candidates into chunks to separately do error correction."
     echo "          --pilon_mem <int>                memory used for pilon. 300G for default."
@@ -126,12 +132,25 @@ JAVA=""
 SAMTOOL=""
 
 NE="no"
+RMRAW="no"
 TGS_TYPE="ont"
 THREAD=16
 MIN_IDY="0.3"
 MIN_IDY_USER="no"
 MIN_MATCH="300"
 MIN_MATCH_USER="no"
+
+HARD_FILTER="no"
+MIN_IDY_HARD="0.75"
+MIN_IDY_HARD_USER="no"
+MIN_ALIGN_HARD="500"
+MIN_ALIGN_HARD_USER="no"
+MAX_HANG_HARD="1000"
+MAX_HANG_HARD_USER="no"
+MIN_ALIGNRATIO_HARD="0.75"
+MIN_ALIGNRATIO_HARD_USER="no"
+FILTER_LENGTH="1000000"
+
 PILON_MEM="300G"
 MINIMAP2_PARAM=" -x ava-ont "
 USE_NEW_MINMAP2_ARG="no"
@@ -149,7 +168,7 @@ if [[ $# -lt 1 ]] ; then
     print_help
     exit 0 ;
 fi
-ARGS=`getopt -o h  --long scaff:,reads:,output:,racon:,pilon:,ngs:,samtools:,java:,tgstype:,chunk:,thread:,minmap_arg:,min_idy:,min_match:,pilon_mem:,p_round:,r_round:,ne,min_nread:,max_nread:,max_candidate:,g_check  -- "$@"`
+ARGS=`getopt -o h  --long scaff:,reads:,output:,racon:,pilon:,ngs:,samtools:,java:,tgstype:,chunk:,thread:,minmap_arg:,min_idy:,min_match:,rm,hard,min_idy_hard:,min_align_hard:,max_hang_hard:,min_alignratio_hard:,length_filter:,pilon_mem:,p_round:,r_round:,ne,min_nread:,max_nread:,max_candidate:,g_check  -- "$@"`
 eval set -- "$ARGS"
 while true; do
     case "$1" in
@@ -238,6 +257,40 @@ while true; do
             shift;
             echo  "             --min_match $MIN_MATCH"
         ;;
+        --min_idy_hard)
+            shift;
+            MIN_IDY_HARD=$1
+            MIN_IDY_HARD_USER="yes"
+            shift;
+            echo  "             --min_idy_hard $MIN_IDY_HARD"
+        ;;
+        --min_align_hard)
+            shift;
+            MIN_ALIGN_HARD=$1
+            MIN_ALIGN_HARD_USER="yes"
+            shift;
+            echo  "             --min_align_hard $MIN_ALIGN_HARD"
+        ;;
+        --max_hang_hard)
+            shift;
+            MAX_HANG_HARD=$1
+            MAX_HANG_HARD_USER="yes"
+            shift;
+            echo  "             --max_hang_hard $MAX_HANG_HARD"
+        ;;
+        --min_alignratio_hard)
+            shift;
+            MIN_ALIGNRATIO_HARD=$1
+            MIN_ALIGNRATIO_HARD_USER="yes"
+            shift;
+            echo  "             --min_alignratio_hard $MIN_ALIGNRATIO_HARD"
+        ;;
+        --length_filter)
+            shift;
+            FILTER_LENGTH=$1
+            shift;
+            echo  "             --length_filter $FILTER_LENGTH"
+        ;;
         --thread)
             shift;
             THREAD=$1
@@ -286,6 +339,16 @@ while true; do
             shift;
             echo  "             --max_candidate $MAX_CANDIDATE"
         ;;
+        --hard)
+            shift;
+            HARD_FILTER="yes"
+            echo  "             --hard "
+        ;;
+        --rm)
+            shift;
+            RMRAW="yes"
+            echo  "             --rm "
+        ;;
         --ne)
             shift;
             NE="yes"
@@ -314,8 +377,10 @@ Candidate=$HOOM_DIR"/tgsgapcloserbin/tgsgapcandidate"
 GapCloser=$HOOM_DIR"/tgsgapcloserbin/tgsgapcloser"
 SeqGen=$HOOM_DIR"/tgsgapcloserbin/tgsseqgen"
 SeqSplit=$HOOM_DIR"/tgsgapcloserbin/tgsseqsplit"
-#MiniMap2=$HOOM_DIR"/minimap2/minimap2"
-MiniMap2=minimap2
+MiniMap2=$HOOM_DIR"/minimap2/minimap2"
+PAFHardFilter=$HOOM_DIR"/filter_hanged_candidate.py"
+PAFGAPFilter=$HOOM_DIR"/filter_gap_region_alignment.py"
+# MiniMap2=minimap2
 
 print_info "Checking basic args & env ..."
 
@@ -323,11 +388,13 @@ check_file_exe $Candidate
 check_file_exe $GapCloser
 check_file_exe $SeqGen
 check_file_exe $SeqSplit
-#check_file_exe $MiniMap2
+check_file_exe $MiniMap2
 # check input args.
 check_arg_exist "input_scaff" $INPUT_SCAFF
 check_arg_exist "reads"  $TGS_READS
 check_arg_null "output" $OUT_PREFIX
+python $PAFHardFilter -h > /dev/null || exit 1
+python $PAFGAPFilter -h > /dev/null || exit 1
 
 if [[ $MIN_NREAD -lt 1 ]] ; then 
     echo "Error : min_nread < 1. exit ..."
@@ -361,8 +428,24 @@ if [[ $TGS_TYPE == "pb" ]] ; then
     if [[ $MIN_MATCH_USER == "no" ]] ; then
         MIN_MATCH="200"
     fi
+    if [[ $MIN_IDY_HARD_USER == "no" ]] ; then
+        MIN_IDY_HARD="0.8"
+    fi
+    if [[ $MIN_ALIGN_HARD_USER == "no" ]] ; then
+        MIN_ALIGN_HARD="200"
+    fi
+    if [[ $MAX_HANG_HARD_USER == "no" ]] ; then
+        MAX_HANG_HARD="200"
+    fi
+    if [[ $MIN_ALIGNRATIO_HARD_USER == "no" ]] ; then
+        MIN_ALIGNRATIO_HARD="0.8"
+    fi
 fi
 print_info_line "TGS reads type is $TGS_TYPE . MINIMAP2_PARAM is $MINIMAP2_PARAM  MIN_IDY is $MIN_IDY . MIN_MATCH is $MIN_MATCH ."
+
+if [[ $HARD_FILTER == "yes" ]] ; then
+    print_info_line "Apply strict filter for alignment. MIN_IDY_HARD is $MIN_IDY_HARD. MIN_ALIGN_HARD is $MIN_ALIGN_HARD. MAX_HANG_HARD is $MAX_HANG_HARD. MIN_ALIGNRATIO_HARD is $MIN_ALIGNRATIO_HARD."
+fi
 
 print_info "Checking basic args & env end."
 #####################################################################
@@ -396,9 +479,17 @@ else
         # run minimap2
         print_info_line "2.1 , run minmap2 to map contigs against tgs reads."
         check_file $TMP_INPUT_SCAFTIG
-        $MiniMap2  $MINIMAP2_PARAM  -t $THREAD  \
-            $TGS_READS  $TMP_INPUT_SCAFTIG \
-            1>$OUT_PREFIX.sub.paf 2>$OUT_PREFIX.minimap2.01.log || exit 1
+        if [[ $RMRAW == "no" ]]; then
+            $MiniMap2  $MINIMAP2_PARAM  -t $THREAD  \
+                $TMP_INPUT_SCAFTIG $TGS_READS \
+                1>$OUT_PREFIX.sub.paf 2>$OUT_PREFIX.minimap2.01.log || exit 1
+            awk -v th=$FILTER_LENGTH '{if(($8<th)||($7-$9<th)) print $0}' $OUT_PREFIX.sub.paf >$OUT_PREFIX.sub.filter.paf
+        else
+            $MiniMap2  $MINIMAP2_PARAM  -t $THREAD  \
+                $TMP_INPUT_SCAFTIG $TGS_READS \
+                2>$OUT_PREFIX.minimap2.01.log | awk -v th=$FILTER_LENGTH '{if(($8<th)||($7-$9<th)) print $0}' - > $OUT_PREFIX.sub.filter.paf || exit 1
+        fi
+        
         date >>'done_step2.1_tag'
     else
         echo 'skip step2.1 since done_step2.1_tag exists'
@@ -411,15 +502,19 @@ else
         TMP_INPUT_SCAFF_INFO=$OUT_PREFIX".orignial_scaff_infos"
         check_file $TMP_INPUT_SCAFF_INFO
         # pre filter unwanted alignments.
-        awk '{if(($3<1000000)||($2-$3<1000000)) print $0}' $OUT_PREFIX.sub.paf >$OUT_PREFIX.sub.filter.paf
+        if [[ $HARD_FILTER == "yes" ]] ; then
+            python $PAFHardFilter --paf $OUT_PREFIX.sub.filter.paf --out $OUT_PREFIX.sub.filter.hardfilter.paf --idy $MIN_IDY_HARD --align $MIN_ALIGN_HARD --hang_wrong $MAX_HANG_HARD --align_ratio $MIN_ALIGNRATIO_HARD
+        else
+            ln -s $OUT_PREFIX.sub.filter.paf $OUT_PREFIX.sub.filter.hardfilter.paf
+        fi
         $Candidate --ont_reads_a $TGS_READS \
-        --contig2ont_paf $OUT_PREFIX.sub.filter.paf \
+        --contig2ont_paf $OUT_PREFIX.sub.filter.hardfilter.paf \
         --min_nread $MIN_NREAD \
         --max_nread $MAX_NREAD \
         --candidate_max $MAX_CANDIDATE --candidate_shake_filter --candidate_merge \
         <$TMP_INPUT_SCAFF_INFO >$OUT_PREFIX.ont.fasta 2>$OUT_PREFIX.cand.log || exit 1
         # remove used paf here
-        rm $OUT_PREFIX.sub.paf
+        # rm $OUT_PREFIX.sub.paf
         date >>'done_step2.2_tag'
     else
         echo 'skip step2.2 since done_step2.2_tag exists'
@@ -620,8 +715,15 @@ check_file $FINAL_READS
 check_file $TMP_INPUT_SCAFTIG
 if [[ ! -e 'done_step_4.1_tag' ]] ; then
     print_info_line "4,1 , mapping contigs against reads ... "
-    $MiniMap2  $MINIMAP2_PARAM  -t $THREAD  $FINAL_READS $TMP_INPUT_SCAFTIG  \
+    
+    if [[ $RMRAW == "no" ]]; then
+        $MiniMap2  $MINIMAP2_PARAM  -t $THREAD  $TMP_INPUT_SCAFTIG $FINAL_READS  \
             1>$OUT_PREFIX.fill.paf 2>$OUT_PREFIX.minimap2.04.log || exit 1
+        awk -v th=$FILTER_LENGTH '{if(($8<th)||($7-$9<th)) print $0}' $OUT_PREFIX.fill.paf >$OUT_PREFIX.fill.filter.paf
+    else
+        $MiniMap2  $MINIMAP2_PARAM  -t $THREAD  $TMP_INPUT_SCAFTIG $FINAL_READS  \
+            2>$OUT_PREFIX.minimap2.04.log | awk -v th=$FILTER_LENGTH '{if(($8<th)||($7-$9<th)) print $0}' - > $OUT_PREFIX.fill.filter.paf || exit 1
+    fi
     date >>'done_step_4.1_tag'
 else
     echo 'skip step4.1 since done_step4.1_tag exists'
@@ -629,18 +731,26 @@ fi
 if [[ ! -e 'done_step_4.2_tag' ]] ; then
     print_info_line "4,2 , filling gaps ... "
     # pre filter unwanted alignments.
-    awk '{if(($3<1000000)||($2-$3<1000000)) print $0}' $OUT_PREFIX.fill.paf >$OUT_PREFIX.fill.filter.paf
+    
+    if [[ $HARD_FILTER == "yes" ]] ; then
+        python $PAFHardFilter --paf $OUT_PREFIX.fill.filter.paf --out $OUT_PREFIX.fill.filter.hardfilter.paf --idy $MIN_IDY_HARD --align $MIN_ALIGN_HARD --hang_wrong $MAX_HANG_HARD --align_ratio $MIN_ALIGNRATIO_HARD
+    else
+        ln -s $OUT_PREFIX.fill.filter.paf $OUT_PREFIX.fill.filter.hardfilter.paf
+    fi
+
+    python $PAFGAPFilter --paf $OUT_PREFIX.fill.filter.hardfilter.paf --out $OUT_PREFIX.fill.filter.hardfilter.gapregion.paf --scaff_info $OUT_PREFIX.orignial_scaff_infos
+
     if [[ $G_CHECK == 0 ]] ; then
-        $GapCloser --ont_reads_a $FINAL_READS --contig2ont_paf $OUT_PREFIX.fill.filter.paf \
+        $GapCloser --ont_reads_a $FINAL_READS --contig2ont_paf $OUT_PREFIX.fill.filter.hardfilter.gapregion.paf \
             --min_match=$MIN_MATCH --min_idy=$MIN_IDY \
             --prefix $OUT_PREFIX 1>$OUT_PREFIX.fill.log  2>&1|| exit 1
         # remove used paf 
-        rm $OUT_PREFIX.fill.paf
+        # rm $OUT_PREFIX.fill.paf
     else
-        $GapCloser --ont_reads_a $FINAL_READS --contig2ont_paf $OUT_PREFIX.fill.filter.paf \
+        $GapCloser --ont_reads_a $FINAL_READS --contig2ont_paf $OUT_PREFIX.fill.filter.hardfilter.gapregion.paf \
             --min_match=$MIN_MATCH --min_idy=$MIN_IDY \
             --prefix $OUT_PREFIX --use_gapsize_check  1>$OUT_PREFIX.fill.log  2>&1|| exit 1
-        rm $OUT_PREFIX.fill.paf
+        # rm $OUT_PREFIX.fill.paf
     fi
     print_info_line "4,2 , gen final seqs ... "
     date >>'done_step_4.2_tag'
